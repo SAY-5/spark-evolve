@@ -100,18 +100,21 @@ object Main {
 
     val metrics = Metrics(spark.sparkContext)
     val registry = SchemaRegistry
-      .fromDirectory(java.nio.file.Paths.get(cfg.schemasDir).resolve(cfg.schemaSubject).getParent)
+      .fromDirectory(java.nio.file.Paths.get(cfg.schemasDir))
       .getOrElse(throw new RuntimeException(s"failed to load schemas from ${cfg.schemasDir}"))
 
-    val readerSchema = registry
-      .latest(cfg.schemaSubject)
+    val versions = registry.versions(cfg.schemaSubject)
+    val readerSchema = versions.lastOption
       .getOrElse(throw new RuntimeException(s"no schemas registered for subject ${cfg.schemaSubject}"))
+    // All earlier versions are candidate writer schemas. The validator tries reader-only first
+    // (no-evolution case), then walks back through these.
+    val writerSchemas = versions.dropRight(1)
 
     val raw     = KafkaSource.read(spark, cfg.kafkaBootstrap, cfg.kafkaTopic)
     val totalIn = raw.count()
     metrics.recordsIn.add(totalIn)
 
-    val split      = Validator.validate(raw, readerSchema)
+    val split      = Validator.validate(raw, readerSchema, writerSchemas)
     val validCount = split.valid.count()
     val badCount   = split.bad.count()
     metrics.recordsValid.add(validCount)

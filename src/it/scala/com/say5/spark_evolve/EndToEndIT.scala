@@ -91,7 +91,7 @@ class EndToEndIT extends AnyFunSuite with Matchers with BeforeAndAfterAll with T
 
       raw.count() shouldBe 50L
 
-      val split = Validator.validate(raw, v2)
+      val split = Validator.validate(raw, readerSchema = v2, writerSchemas = Seq(v1))
       val valid = split.valid.cache()
       val bad   = split.bad.cache()
 

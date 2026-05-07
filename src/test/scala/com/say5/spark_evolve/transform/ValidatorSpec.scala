@@ -96,4 +96,26 @@ class ValidatorSpec extends AnyFunSuite with Matchers {
     val reason = Validator.BadRowSchema("reason")
     reason.nullable shouldBe false
   }
+
+  test("decodeWithFallback handles v1 payload under v2 reader by walking writer candidates") {
+    val payload = encode(aRecord(schemaV1), schemaV1)
+    val r       = Validator.decodeWithFallback(reader = schemaV2, writers = Seq(schemaV1), payload)
+    r.isDefined shouldBe true
+    r.get.get("discount_cents").asInstanceOf[Long] shouldBe 0L // promoted default
+  }
+
+  test("decodeWithFallback returns None when no candidate writer matches") {
+    val r = Validator.decodeWithFallback(
+      reader = schemaV2,
+      writers = Seq(schemaV1),
+      payload = Array[Byte](99, 99, 99)
+    )
+    r shouldBe None
+  }
+
+  test("decodeWithFallback handles writer == reader (no candidates needed)") {
+    val payload = encode(aRecord(schemaV2), schemaV2)
+    val r       = Validator.decodeWithFallback(reader = schemaV2, writers = Nil, payload)
+    r.isDefined shouldBe true
+  }
 }

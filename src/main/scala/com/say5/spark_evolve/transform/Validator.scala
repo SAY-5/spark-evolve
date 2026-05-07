@@ -44,24 +44,27 @@ object Validator {
     )
   )
 
-  /** Apply the split. The reader schema (`schema`) is what successful records will be promoted to — fields
-    * the writer didn't have but that have defaults in the reader schema get filled in with those defaults.
+  /** Apply the split.
     *
-    * Implementation note: we run two independent `mapPartitions` passes (one for valid, one for bad) so the
-    * downstream DataFrames carry only their own row shape. This is slightly less efficient than a single-pass
-    * split but avoids the Row(Any, Row, Row) tuple shape that breaks Spark serialization in some cluster
-    * modes.
+    *   - `readerSchema` is what successful records will be promoted to.
+    *   - `writerSchemas` is the ordered list of historical schemas events may have been written under (oldest
+    *     first). The validator tries each in order until one decodes cleanly. The reader schema is also tried
+    *     first — covers the no-evolution case.
+    *
+    * Fields the writer didn't have but that have defaults in the reader schema get filled in with those
+    * defaults via Avro's standard reader-schema resolution.
     */
-  def validate(kafkaDf: DataFrame, schema: Schema): Split = {
-    val schemaJson = schema.toString
-    val baseRdd    = kafkaDf.select("topic", "partition", "offset", "timestamp", "value").rdd.cache()
+  def validate(kafkaDf: DataFrame, readerSchema: Schema, writerSchemas: Seq[Schema] = Nil): Split = {
+    val readerJson  = readerSchema.toString
+    val writerJsons = writerSchemas.map(_.toString).toVector
+    val baseRdd     = kafkaDf.select("topic", "partition", "offset", "timestamp", "value").rdd.cache()
 
     val validRows = baseRdd.mapPartitions { iter =>
-      val parsed = new Schema.Parser().parse(schemaJson)
-      val reader = new GenericDatumReader[GenericRecord](parsed)
+      val readerSchemaP = new Schema.Parser().parse(readerJson)
+      val writers       = writerJsons.map(j => new Schema.Parser().parse(j))
       iter.flatMap { row =>
         val payload = row.getAs[Array[Byte]](4)
-        decode(reader, parsed, payload).toOption.map { rec =>
+        decodeWithFallback(readerSchemaP, writers, payload).map { rec =>
           Row(
             str(rec, "order_id"),
             str(rec, "customer_id"),
@@ -75,17 +78,17 @@ object Validator {
     }
 
     val badRows = baseRdd.mapPartitions { iter =>
-      val parsed = new Schema.Parser().parse(schemaJson)
-      val reader = new GenericDatumReader[GenericRecord](parsed)
+      val readerSchemaP = new Schema.Parser().parse(readerJson)
+      val writers       = writerJsons.map(j => new Schema.Parser().parse(j))
       iter.flatMap { row =>
         val topic     = row.getString(0)
         val partition = row.getInt(1)
         val offset    = row.getLong(2)
         val ts        = row.getTimestamp(3)
         val payload   = row.getAs[Array[Byte]](4)
-        decode(reader, parsed, payload) match {
-          case Right(_)     => None
-          case Left(reason) => Some(Row(topic, partition, offset, ts, payload, reason))
+        decodeWithFallback(readerSchemaP, writers, payload) match {
+          case Some(_) => None
+          case None    => Some(Row(topic, partition, offset, ts, payload, "decode failed"))
         }
       }
     }
@@ -95,6 +98,26 @@ object Validator {
       valid = spark.createDataFrame(validRows, OrderRowSchema),
       bad = spark.createDataFrame(badRows, BadRowSchema)
     )
+  }
+
+  /** Try the reader schema first (writer == reader), then each candidate writer schema in turn. Returns
+    * Some(record) on first success.
+    */
+  private[transform] def decodeWithFallback(
+    reader: Schema,
+    writers: Seq[Schema],
+    payload: Array[Byte]
+  ): Option[GenericRecord] = {
+    val singleReader = new GenericDatumReader[GenericRecord](reader)
+    decode(singleReader, reader, payload).toOption.orElse {
+      writers.iterator
+        .flatMap { w =>
+          val r = new GenericDatumReader[GenericRecord](w, reader)
+          decode(r, reader, payload).toOption
+        }
+        .toSeq
+        .headOption
+    }
   }
 
   /** Convenience: count rows on each side without persisting. */

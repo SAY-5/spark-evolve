@@ -59,7 +59,11 @@ class EndToEndIT extends AnyFunSuite with Matchers with BeforeAndAfterAll with T
       val v2 = new Schema.Parser().parse(new java.io.File("schemas/orders/v2.avsc"))
 
       val topic = "orders-it"
+      // Pre-create the topic with one partition so Spark's metadata fetch sees it immediately.
+      createTopic(kafka.bootstrapServers, topic)
       produceEvents(kafka.bootstrapServers, topic, v1, count = 50, includeBad = true)
+      // Brief settle so the broker reports the high-water mark to consumer metadata fetches.
+      Thread.sleep(2000)
 
       // Configure Spark to talk to MinIO.
       val hc = sparkSession.sparkContext.hadoopConfiguration
@@ -70,6 +74,11 @@ class EndToEndIT extends AnyFunSuite with Matchers with BeforeAndAfterAll with T
       hc.set("fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
       hc.set("fs.s3a.connection.ssl.enabled", "false")
 
+      // Independently verify Kafka has all 50 messages before invoking Spark, so a Spark-side
+      // read failure doesn't get silently swallowed by failOnDataLoss=false.
+      val consumed = consumeAll(kafka.bootstrapServers, topic, 50)
+      consumed shouldBe 50
+
       val raw = sparkSession.read
         .format("kafka")
         .option("kafka.bootstrap.servers", kafka.bootstrapServers)
@@ -78,6 +87,9 @@ class EndToEndIT extends AnyFunSuite with Matchers with BeforeAndAfterAll with T
         .option("endingOffsets", "latest")
         .option("failOnDataLoss", "false")
         .load()
+        .cache()
+
+      raw.count() shouldBe 50L
 
       val split = Validator.validate(raw, v2)
       val valid = split.valid.cache()
@@ -102,6 +114,44 @@ class EndToEndIT extends AnyFunSuite with Matchers with BeforeAndAfterAll with T
 
       val readBack = sparkSession.read.parquet(outDir).count()
       readBack should be > 0L
+    }
+  }
+
+  private def consumeAll(bootstrap: String, topic: String, expected: Int): Int = {
+    import org.apache.kafka.clients.consumer.KafkaConsumer
+    val props = new Properties()
+    props.put("bootstrap.servers", bootstrap)
+    props.put("group.id", s"verify-${java.util.UUID.randomUUID()}")
+    props.put("auto.offset.reset", "earliest")
+    props.put("enable.auto.commit", "false")
+    props.put("key.deserializer",   "org.apache.kafka.common.serialization.ByteArrayDeserializer")
+    props.put("value.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer")
+    val consumer = new KafkaConsumer[Array[Byte], Array[Byte]](props)
+    try {
+      consumer.subscribe(java.util.Collections.singletonList(topic))
+      var count   = 0
+      val deadline = System.currentTimeMillis() + 30000
+      while (count < expected && System.currentTimeMillis() < deadline) {
+        val records = consumer.poll(java.time.Duration.ofMillis(1000))
+        count += records.count()
+      }
+      count
+    } finally {
+      consumer.close()
+    }
+  }
+
+  private def createTopic(bootstrap: String, topic: String): Unit = {
+    val props = new Properties()
+    props.put("bootstrap.servers", bootstrap)
+    val admin = org.apache.kafka.clients.admin.AdminClient.create(props)
+    try {
+      val newTopic = new org.apache.kafka.clients.admin.NewTopic(topic, 1, 1.toShort)
+      admin.createTopics(java.util.Collections.singletonList(newTopic)).all().get()
+    } catch {
+      case _: Throwable => () // topic may already exist; ignore
+    } finally {
+      admin.close()
     }
   }
 

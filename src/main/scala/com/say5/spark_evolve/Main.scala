@@ -1,10 +1,16 @@
 package com.say5.spark_evolve
 
 import com.say5.spark_evolve.config.JobConfig
-import com.say5.spark_evolve.ingest.KafkaSource
+import com.say5.spark_evolve.ingest.{KafkaSource, KafkaStreamSource}
 import com.say5.spark_evolve.obs.Metrics
 import com.say5.spark_evolve.schema.{Compatibility, SchemaRegistry, Violation}
-import com.say5.spark_evolve.transform.{Aggregator, ParquetSink, Validator}
+import com.say5.spark_evolve.transform.{
+  Aggregator,
+  ParquetSink,
+  StreamingParquetSink,
+  StreamingValidator,
+  Validator
+}
 import org.apache.spark.sql.SparkSession
 import org.slf4j.LoggerFactory
 
@@ -23,6 +29,7 @@ object Main {
     val exitCode = args.toList match {
       case "schema" :: "check" :: rest => runSchemaCheck(rest)
       case "run" :: _                  => runPipeline(); 0
+      case "streaming" :: _            => runStreamingPipeline(); 0
       case Nil                         => runPipeline(); 0
       case "--help" :: _ | "-h" :: _   => printHelp(); 0
       case other =>
@@ -35,10 +42,11 @@ object Main {
 
   private def printHelp(): Unit = {
     Console.out.println(
-      """spark-evolve — Spark batch pipeline with codified schema-evolution rules.
+      """spark-evolve — Spark pipeline with codified schema-evolution rules.
         |
         |Commands:
         |  run                                                   Run the batch pipeline (default).
+        |  streaming                                             Run the structured-streaming pipeline.
         |  schema check --old <path> --new <path> --level <lvl>  Check compatibility of two .avsc files.
         |                                                        Levels: backward, forward, full, none.
         |""".stripMargin
@@ -127,6 +135,41 @@ object Main {
     }
 
     log.info(s"metrics: ${metrics.snapshot}")
+    spark.stop()
+  }
+
+  /** Structured-streaming entry point. Reuses the Validator + Aggregator topology on streaming Datasets via
+    * `readStream` + `writeStream`. Watermark handling lives in the streaming aggregator so late events are
+    * dropped after the configured lateness window. Trigger is processing-time on a 30s cadence.
+    */
+  private def runStreamingPipeline(): Unit = {
+    val cfg = JobConfig.load()
+    log.info(
+      s"streaming: kafka=${cfg.kafkaBootstrap} topic=${cfg.kafkaTopic} bucket=${cfg.s3Bucket}"
+    )
+
+    val spark = SparkSession
+      .builder()
+      .appName("spark-evolve-streaming")
+      .getOrCreate()
+
+    configureS3a(spark, cfg)
+
+    val registry = SchemaRegistry
+      .fromDirectory(java.nio.file.Paths.get(cfg.schemasDir))
+      .getOrElse(throw new RuntimeException(s"failed to load schemas from ${cfg.schemasDir}"))
+
+    val versions = registry.versions(cfg.schemaSubject)
+    val readerSchema = versions.lastOption
+      .getOrElse(throw new RuntimeException(s"no schemas registered for subject ${cfg.schemaSubject}"))
+    val writerSchemas = versions.dropRight(1)
+
+    val raw   = KafkaStreamSource.readStream(spark, cfg.kafkaBootstrap, cfg.kafkaTopic)
+    val split = StreamingValidator.validate(raw, readerSchema, writerSchemas)
+    val aggDf = Aggregator.aggregateStreaming(split.valid, cfg.windowDuration)
+    val ckpt  = sys.env.getOrElse("SPARK_EVOLVE_CHECKPOINT", "/tmp/spark-evolve-stream-checkpoint")
+    val query = StreamingParquetSink.writeAggregates(aggDf, cfg.outputPath, ckpt)
+    query.awaitTermination()
     spark.stop()
   }
 

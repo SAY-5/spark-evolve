@@ -111,6 +111,38 @@ We picked append because it composes better with at-least-once Kafka
 semantics: in a partial-failure scenario, two appends are recoverable;
 two overwrites can lose work.
 
+## Batch vs structured streaming
+
+Two entry points share the same Validator + Aggregator topology:
+
+- **`Main.run` (batch)**: `spark.read.format("kafka")` against a fixed
+  start/end offset range. Use this for backfills, replays, one-shot
+  processing of a captured offset range, and any pipeline that runs as a
+  cron-triggered job. Latency is whatever the job's wall-clock is —
+  typically minutes.
+- **`Main.streaming` (structured streaming)**: `spark.readStream` against
+  the live tail of the topic, plus a `withWatermark("event_time", "1
+  hour")` and a `Trigger.ProcessingTime("30 seconds")`. Output mode is
+  `append`, so each closed window emits exactly once after the watermark
+  passes the window end. Use this for continuous low-latency ingest
+  where downstream consumers want hourly aggregates within a couple of
+  minutes of real time.
+
+The validator and aggregator have streaming-safe variants
+(`StreamingValidator`, `Aggregator.aggregateStreaming`) that avoid
+batch-only operations: no `kafkaDf.rdd`, no `.count()`, no
+`countDistinct` (which would require unbounded state). The trade-off
+documented in `Aggregator.aggregateStreaming` is that streaming output
+uses `order_count` as an upper-bound proxy for `order_id_distinct`
+because Spark structured streaming doesn't support distinct count in
+streaming aggregations without approximate-data-sketch state.
+
+Pick batch for **backfills, replays, idempotent reprocessing,
+deterministic test fixtures**. Pick streaming for **continuous ingest,
+near-real-time dashboards, alerting**. Both write to the same
+`date_hour` / `customer_segment` Parquet layout, so downstream queries
+don't care which entry point produced a given row.
+
 ## What's deliberately not here
 
 - **Confluent wire format.** Records aren't prefixed with a 5-byte magic

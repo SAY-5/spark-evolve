@@ -1,0 +1,13 @@
+{
+  "type": "record",
+  "namespace": "com.say5.spark_evolve.events",
+  "name": "Order",
+  "fields": [
+    { "name": "order_id",          "type": "string" },
+    { "name": "customer_id",       "type": "string" },
+    { "name": "customer_segment",  "type": "string" },
+    { "name": "total_cents",       "type": "long" },
+    { "name": "event_time",        "type": { "type": "long", "logicalType": "timestamp-millis" } },
+    { "name": "discount_cents",    "type": "long", "default": 0 }
+  ]
+}

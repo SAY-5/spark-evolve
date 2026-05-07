@@ -1,0 +1,139 @@
+package com.say5.spark_evolve
+
+import com.say5.spark_evolve.config.JobConfig
+import com.say5.spark_evolve.ingest.KafkaSource
+import com.say5.spark_evolve.obs.Metrics
+import com.say5.spark_evolve.schema.{Compatibility, SchemaRegistry, Violation}
+import com.say5.spark_evolve.transform.{Aggregator, ParquetSink, Validator}
+import org.apache.spark.sql.SparkSession
+import org.slf4j.LoggerFactory
+
+/** Entry point. Two top-level sub-commands:
+  *
+  * `run` — execute the batch pipeline (Kafka → Parquet) `schema check` — validate that one schema may replace
+  * another
+  *
+  * Both commands read configuration from `application.conf` for shared settings; flags override per-command.
+  */
+object Main {
+
+  private val log = LoggerFactory.getLogger(getClass)
+
+  def main(args: Array[String]): Unit = {
+    val exitCode = args.toList match {
+      case "schema" :: "check" :: rest => runSchemaCheck(rest)
+      case "run" :: _                  => runPipeline(); 0
+      case Nil                         => runPipeline(); 0
+      case "--help" :: _ | "-h" :: _   => printHelp(); 0
+      case other =>
+        Console.err.println(s"unknown command: ${other.mkString(" ")}")
+        printHelp()
+        2
+    }
+    if (exitCode != 0) sys.exit(exitCode)
+  }
+
+  private def printHelp(): Unit = {
+    Console.out.println(
+      """spark-evolve — Spark batch pipeline with codified schema-evolution rules.
+        |
+        |Commands:
+        |  run                                                   Run the batch pipeline (default).
+        |  schema check --old <path> --new <path> --level <lvl>  Check compatibility of two .avsc files.
+        |                                                        Levels: backward, forward, full, none.
+        |""".stripMargin
+    )
+  }
+
+  private def runSchemaCheck(args: List[String]): Int = {
+    val parsed   = parseFlags(args)
+    val oldPath  = parsed.getOrElse("old", "")
+    val newPath  = parsed.getOrElse("new", "")
+    val levelStr = parsed.getOrElse("level", "backward")
+    if (oldPath.isEmpty || newPath.isEmpty) {
+      Console.err.println("schema check requires --old <path> and --new <path>")
+      return 2
+    }
+    val level = Compatibility.CompatibilityLevel.parse(levelStr) match {
+      case Right(l)  => l
+      case Left(err) => Console.err.println(err); return 2
+    }
+    val oldS = SchemaRegistry.parseFile(oldPath).get
+    val newS = SchemaRegistry.parseFile(newPath).get
+    Compatibility.check(oldS, newS, level) match {
+      case Right(_) =>
+        Console.out.println("compatible")
+        0
+      case Left(violations) =>
+        Console.out.println(s"incompatible at level=$levelStr:")
+        Console.out.println(Violation.toMarkdown(violations))
+        1
+    }
+  }
+
+  private def parseFlags(args: List[String]): Map[String, String] = {
+    val m    = scala.collection.mutable.Map.empty[String, String]
+    var rest = args
+    while (rest.nonEmpty) {
+      rest match {
+        case key :: value :: tail if key.startsWith("--") =>
+          m.update(key.drop(2), value)
+          rest = tail
+        case _ :: tail =>
+          rest = tail
+        case Nil => ()
+      }
+    }
+    m.toMap
+  }
+
+  private def runPipeline(): Unit = {
+    val cfg = JobConfig.load()
+    log.info(s"loaded config: kafka=${cfg.kafkaBootstrap} topic=${cfg.kafkaTopic} bucket=${cfg.s3Bucket}")
+
+    val spark = SparkSession
+      .builder()
+      .appName("spark-evolve")
+      .getOrCreate()
+
+    configureS3a(spark, cfg)
+
+    val metrics = Metrics(spark.sparkContext)
+    val registry = SchemaRegistry
+      .fromDirectory(java.nio.file.Paths.get(cfg.schemasDir).resolve(cfg.schemaSubject).getParent)
+      .getOrElse(throw new RuntimeException(s"failed to load schemas from ${cfg.schemasDir}"))
+
+    val readerSchema = registry
+      .latest(cfg.schemaSubject)
+      .getOrElse(throw new RuntimeException(s"no schemas registered for subject ${cfg.schemaSubject}"))
+
+    val raw     = KafkaSource.read(spark, cfg.kafkaBootstrap, cfg.kafkaTopic)
+    val totalIn = raw.count()
+    metrics.recordsIn.add(totalIn)
+
+    val split      = Validator.validate(raw, readerSchema)
+    val validCount = split.valid.count()
+    val badCount   = split.bad.count()
+    metrics.recordsValid.add(validCount)
+    metrics.recordsBad.add(badCount)
+
+    val agg = Aggregator.aggregate(split.valid, cfg.windowDuration)
+    ParquetSink.writeAggregates(agg, cfg.outputPath)
+    if (badCount > 0) {
+      ParquetSink.writeBadRecords(split.bad, cfg.badPath)
+    }
+
+    log.info(s"metrics: ${metrics.snapshot}")
+    spark.stop()
+  }
+
+  private def configureS3a(spark: SparkSession, cfg: JobConfig): Unit = {
+    val hc = spark.sparkContext.hadoopConfiguration
+    hc.set("fs.s3a.endpoint", cfg.s3Endpoint)
+    hc.set("fs.s3a.access.key", cfg.s3AccessKey)
+    hc.set("fs.s3a.secret.key", cfg.s3SecretKey)
+    hc.setBoolean("fs.s3a.path.style.access", cfg.s3PathStyle)
+    hc.set("fs.s3a.aws.credentials.provider", "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider")
+    hc.set("fs.s3a.connection.ssl.enabled", if (cfg.s3Endpoint.startsWith("https")) "true" else "false")
+  }
+}

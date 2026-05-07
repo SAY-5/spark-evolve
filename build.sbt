@@ -69,6 +69,8 @@ lazy val root = (project in file("."))
       "org.slf4j"        %  "slf4j-api"      % "2.0.13",
       "ch.qos.logback"   %  "logback-classic" % "1.4.14"     % Runtime,
       "org.scalatest"    %% "scalatest"      % "3.2.18"     % Test,
+      "org.scalatestplus" %% "scalacheck-1-17" % "3.2.18.0"  % Test,
+      "org.scalacheck"   %% "scalacheck"     % "1.17.0"     % Test,
       "com.dimafeng"     %% "testcontainers-scala-scalatest" % testcontainersScalaVersion % Test,
       "com.dimafeng"     %% "testcontainers-scala-kafka"     % testcontainersScalaVersion % Test,
       "com.dimafeng"     %% "testcontainers-scala-minio"     % testcontainersScalaVersion % Test
@@ -98,7 +100,7 @@ lazy val root = (project in file("."))
       case x if x.endsWith("module-info.class")     => MergeStrategy.discard
       case _                                        => MergeStrategy.first
     },
-    coverageMinimumStmtTotal := 60,
+    coverageMinimumStmtTotal := 65,
     coverageFailOnMinimum := false
   )
 

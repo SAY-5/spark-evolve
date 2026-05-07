@@ -124,12 +124,12 @@ class EndToEndIT extends AnyFunSuite with Matchers with BeforeAndAfterAll with T
     props.put("group.id", s"verify-${java.util.UUID.randomUUID()}")
     props.put("auto.offset.reset", "earliest")
     props.put("enable.auto.commit", "false")
-    props.put("key.deserializer",   "org.apache.kafka.common.serialization.ByteArrayDeserializer")
+    props.put("key.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer")
     props.put("value.deserializer", "org.apache.kafka.common.serialization.ByteArrayDeserializer")
     val consumer = new KafkaConsumer[Array[Byte], Array[Byte]](props)
     try {
       consumer.subscribe(java.util.Collections.singletonList(topic))
-      var count   = 0
+      var count    = 0
       val deadline = System.currentTimeMillis() + 30000
       while (count < expected && System.currentTimeMillis() < deadline) {
         val records = consumer.poll(java.time.Duration.ofMillis(1000))

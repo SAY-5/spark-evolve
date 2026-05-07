@@ -46,45 +46,55 @@ object Validator {
 
   /** Apply the split. The reader schema (`schema`) is what successful records will be promoted to — fields
     * the writer didn't have but that have defaults in the reader schema get filled in with those defaults.
+    *
+    * Implementation note: we run two independent `mapPartitions` passes (one for valid, one for bad) so the
+    * downstream DataFrames carry only their own row shape. This is slightly less efficient than a single-pass
+    * split but avoids the Row(Any, Row, Row) tuple shape that breaks Spark serialization in some cluster
+    * modes.
     */
   def validate(kafkaDf: DataFrame, schema: Schema): Split = {
     val schemaJson = schema.toString
-    val rdd        = kafkaDf.select("topic", "partition", "offset", "timestamp", "value").rdd
-    val mapped = rdd.mapPartitions { iter =>
+    val baseRdd    = kafkaDf.select("topic", "partition", "offset", "timestamp", "value").rdd.cache()
+
+    val validRows = baseRdd.mapPartitions { iter =>
       val parsed = new Schema.Parser().parse(schemaJson)
       val reader = new GenericDatumReader[GenericRecord](parsed)
-      iter.map { row =>
+      iter.flatMap { row =>
+        val payload = row.getAs[Array[Byte]](4)
+        decode(reader, parsed, payload).toOption.map { rec =>
+          Row(
+            str(rec, "order_id"),
+            str(rec, "customer_id"),
+            str(rec, "customer_segment"),
+            lng(rec, "total_cents"),
+            new java.sql.Timestamp(lng(rec, "event_time")),
+            lngOr(rec, "discount_cents", 0L)
+          )
+        }
+      }
+    }
+
+    val badRows = baseRdd.mapPartitions { iter =>
+      val parsed = new Schema.Parser().parse(schemaJson)
+      val reader = new GenericDatumReader[GenericRecord](parsed)
+      iter.flatMap { row =>
         val topic     = row.getString(0)
         val partition = row.getInt(1)
         val offset    = row.getLong(2)
         val ts        = row.getTimestamp(3)
         val payload   = row.getAs[Array[Byte]](4)
         decode(reader, parsed, payload) match {
-          case Right(rec) =>
-            (
-              true,
-              Row(
-                str(rec, "order_id"),
-                str(rec, "customer_id"),
-                str(rec, "customer_segment"),
-                lng(rec, "total_cents"),
-                new java.sql.Timestamp(lng(rec, "event_time")),
-                lngOr(rec, "discount_cents", 0L)
-              ),
-              Row.empty
-            )
-          case Left(reason) =>
-            (false, Row.empty, Row(topic, partition, offset, ts, payload, reason))
+          case Right(_)     => None
+          case Left(reason) => Some(Row(topic, partition, offset, ts, payload, reason))
         }
       }
     }
-    mapped.cache()
-    val spark     = kafkaDf.sparkSession
-    val validRows = mapped.filter(_._1).map(_._2)
-    val badRows   = mapped.filter(t => !t._1).map(_._3)
-    val valid     = spark.createDataFrame(validRows, OrderRowSchema)
-    val bad       = spark.createDataFrame(badRows, BadRowSchema)
-    Split(valid, bad)
+
+    val spark = kafkaDf.sparkSession
+    Split(
+      valid = spark.createDataFrame(validRows, OrderRowSchema),
+      bad = spark.createDataFrame(badRows, BadRowSchema)
+    )
   }
 
   /** Convenience: count rows on each side without persisting. */

@@ -51,11 +51,15 @@ Forward and Full are also implemented; see `Compatibility.scala`.
 | `schema/SchemaRegistry.scala`               | File-backed `<root>/<subject>/v<n>.avsc` registry                |
 | `schema/Violation.scala`                    | Sealed-trait of compatibility violations                         |
 | `ingest/KafkaSource.scala`                  | Batch read from Kafka                                            |
-| `transform/Validator.scala`                 | Per-record decode → split into valid / bad                       |
-| `transform/Aggregator.scala`                | Group-by `(customer, segment, window)` + metrics                 |
-| `transform/ParquetSink.scala`               | Partitioned Parquet writer                                       |
+| `ingest/KafkaStreamSource.scala`            | Structured-streaming read from Kafka                             |
+| `transform/Validator.scala`                 | Per-record decode → split into valid / bad (batch)               |
+| `transform/StreamingValidator.scala`        | Streaming-safe per-record decode + split                         |
+| `transform/Aggregator.scala`                | Group-by `(customer, segment, window)` + metrics (batch+stream)  |
+| `transform/ParquetSink.scala`               | Partitioned Parquet writer (batch)                               |
+| `transform/StreamingParquetSink.scala`      | Partitioned Parquet writer (structured streaming)                |
+| `transform/IcebergSink.scala`               | Apache Iceberg dual-write sink (HadoopCatalog)                   |
 | `obs/Metrics.scala`                         | Spark accumulator counters                                       |
-| `Main.scala`                                | Entry point + `schema check` CLI                                 |
+| `Main.scala`                                | Entry point: `run`, `streaming`, `schema check` CLI              |
 | `BenchHarness.scala`                        | In-process bench harness backing `make bench`                    |
 
 ## Quickstart
@@ -75,6 +79,27 @@ make down
 make schema-check-ok    # bundled v1 → v2 (compatible)
 make schema-check-bad   # bundled v2 → v3 (incompatible — exits 1)
 ```
+
+## Sinks: Parquet vs Iceberg
+
+The pipeline writes Parquet by default; Iceberg dual-write turns on by
+setting `SPARK_EVOLVE_ICEBERG_WAREHOUSE` to a HadoopCatalog warehouse
+path. Same partition layout, two on-disk representations.
+
+|                        | Parquet                          | Iceberg (HadoopCatalog)                                                  |
+|------------------------|----------------------------------|--------------------------------------------------------------------------|
+| Storage                | Plain Parquet files in S3        | Parquet + manifest/snapshot metadata files                               |
+| Atomicity              | None — partial writes visible    | ACID — snapshot updates are atomic                                       |
+| Time travel            | None                             | Yes — query any historical snapshot                                      |
+| Schema evolution       | Producer-side (this engine)      | Producer-side **plus** in-place ALTER TABLE without rewriting data files |
+| Concurrent writers     | Last-write-wins, manual care     | Optimistic-concurrency commit retries                                    |
+| Metadata overhead      | None                             | One extra file tree per table (small)                                    |
+| Catalog dependency     | None                             | HadoopCatalog (file-based) or HiveCatalog/Glue/REST                      |
+
+Pick Parquet when you have one writer and downstream consumers do their
+own dedup. Pick Iceberg when you need ACID, time travel, or in-place
+schema evolution. See `ARCHITECTURE.md` for the deeper trade-off
+discussion.
 
 ## Real bench numbers
 

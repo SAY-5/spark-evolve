@@ -143,6 +143,77 @@ near-real-time dashboards, alerting**. Both write to the same
 `date_hour` / `customer_segment` Parquet layout, so downstream queries
 don't care which entry point produced a given row.
 
+## Iceberg vs plain Parquet
+
+Two output sinks are wired in parallel. Both write to the same partition
+layout (`date_hour`, `customer_segment`) so a query can target either.
+
+### Plain Parquet
+
+`s3a://<bucket>/<output>/date_hour=YYYY-MM-DD-HH/customer_segment=…/part-*.parquet`
+
+- One file tree, no metadata layer.
+- Partial writes are visible (a Spark task that fails halfway leaves its
+  output files in the directory; downstream readers see them until a
+  cleanup job removes them).
+- Schema evolution is producer-side only (this project's compatibility
+  engine). Renaming a column requires rewriting historical data.
+- Best for: single-writer pipelines, bounded blast radius, downstream
+  consumers that already do their own dedup or use a separate catalog
+  layer.
+
+### Iceberg (HadoopCatalog)
+
+`<warehouse>/<db>/<table>/data/...` plus
+`<warehouse>/<db>/<table>/metadata/snap-*.avro`,
+`<warehouse>/<db>/<table>/metadata/manifest-list-*.avro`,
+`<warehouse>/<db>/<table>/metadata/version-hint.text`
+
+The `IcebergSink` uses `org.apache.iceberg:iceberg-spark-runtime-3.5_2.13`
+configured against a HadoopCatalog rooted at `SPARK_EVOLVE_ICEBERG_WAREHOUSE`.
+HadoopCatalog is the simplest catalog: it stores all catalog state in
+files under the warehouse path. There's no external metastore (no Hive,
+no Glue, no REST), which makes it ideal for tests and for greenfield
+deploys where you don't yet have a metastore.
+
+What it buys you over plain Parquet:
+
+- **ACID writes**: a commit produces a new snapshot file; readers always
+  see a consistent view, never a half-written one.
+- **Time travel**: every snapshot has an ID; query against any prior
+  snapshot via `spark.read.option("snapshot-id", id).format("iceberg")`.
+- **Schema evolution without data rewrite**: add/rename/drop columns in
+  the table metadata. Existing Parquet files don't change. Reads
+  reconcile field IDs across the metadata revision.
+- **Concurrent writers**: optimistic-concurrency commit retries. Two
+  pipelines writing the same partition concurrently produce two snapshots,
+  not corrupted data.
+- **Hidden partitioning**: producers can change partitioning without
+  breaking consumer queries. (The pipeline declares
+  `(date_hour, customer_segment)` for now; switching to
+  `(bucket(customer_id, 16), date_hour)` later is a metadata-only
+  operation.)
+
+What it costs:
+
+- **Metadata overhead**: every commit writes one snapshot + manifest-list
+  + manifest file. For tiny tables this dominates. The Iceberg roundtrip
+  test in `IcebergSinkSpec` exercises this by writing 50 rows and reading
+  them back, which still runs in a few seconds — overhead is real but
+  not blocking.
+- **Catalog dependency**: HadoopCatalog requires the writer and all
+  readers to share access to the same warehouse path. This is fine on
+  S3/MinIO but constrains where the table can be queried from.
+- **Maintenance jobs**: snapshot-expire, orphan-file cleanup, and rewrite
+  manifests are not automatic; long-running tables accumulate metadata
+  fast enough that operators need a periodic compaction job.
+
+The pipeline's default is plain Parquet — the Iceberg dual-write turns
+on only when `SPARK_EVOLVE_ICEBERG_WAREHOUSE` is set. This is deliberate:
+Iceberg is the right answer for many production deploys, but adopting
+it means committing to its operational surface area, and that's a
+deliberate decision per deploy, not a default the framework should make.
+
 ## What's deliberately not here
 
 - **Confluent wire format.** Records aren't prefixed with a 5-byte magic

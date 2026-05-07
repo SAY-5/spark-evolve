@@ -40,13 +40,16 @@ lazy val IntegrationTest = config("it").extend(Test)
 
 // Marker for spark deps so we can exclude them from the assembly jar while
 // keeping them on the compile/run/test classpath.
+val icebergVersion = "1.5.2"
+
 val sparkDeps: Seq[ModuleID] = Seq(
-  "org.apache.spark"  %% "spark-core"           % sparkVersion,
-  "org.apache.spark"  %% "spark-sql"            % sparkVersion,
-  "org.apache.spark"  %% "spark-sql-kafka-0-10" % sparkVersion,
-  "org.apache.spark"  %% "spark-avro"           % sparkVersion,
-  "org.apache.hadoop" %  "hadoop-aws"           % "3.3.4",
-  "com.amazonaws"     %  "aws-java-sdk-bundle"  % "1.12.262"
+  "org.apache.spark"  %% "spark-core"                  % sparkVersion,
+  "org.apache.spark"  %% "spark-sql"                   % sparkVersion,
+  "org.apache.spark"  %% "spark-sql-kafka-0-10"        % sparkVersion,
+  "org.apache.spark"  %% "spark-avro"                  % sparkVersion,
+  "org.apache.hadoop" %  "hadoop-aws"                  % "3.3.4",
+  "com.amazonaws"     %  "aws-java-sdk-bundle"         % "1.12.262",
+  "org.apache.iceberg" %% "iceberg-spark-runtime-3.5"  % icebergVersion
 )
 
 lazy val root = (project in file("."))
@@ -88,7 +91,8 @@ lazy val root = (project in file("."))
         name.startsWith("aws-java-sdk-") ||
         name.startsWith("scala-library") ||
         name.startsWith("scala-reflect") ||
-        name.startsWith("scala-compiler")
+        name.startsWith("scala-compiler") ||
+        name.startsWith("iceberg-spark-runtime-")
       }
     },
     assembly / assemblyMergeStrategy := {

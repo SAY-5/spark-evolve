@@ -6,6 +6,7 @@ import com.say5.spark_evolve.obs.Metrics
 import com.say5.spark_evolve.schema.{Compatibility, SchemaRegistry, Violation}
 import com.say5.spark_evolve.transform.{
   Aggregator,
+  IcebergSink,
   ParquetSink,
   StreamingParquetSink,
   StreamingValidator,
@@ -132,6 +133,19 @@ object Main {
     ParquetSink.writeAggregates(agg, cfg.outputPath)
     if (badCount > 0) {
       ParquetSink.writeBadRecords(split.bad, cfg.badPath)
+    }
+    // Optional Iceberg dual-write. Enable by setting SPARK_EVOLVE_ICEBERG_WAREHOUSE to a HadoopCatalog
+    // root path (typically under MinIO/S3, e.g. `s3a://warehouse/iceberg`). The Iceberg table is named
+    // `<catalog>.spark_evolve.agg_orders` and has the same partition layout as the Parquet sink.
+    sys.env.get("SPARK_EVOLVE_ICEBERG_WAREHOUSE").foreach { warehouse =>
+      log.info(s"iceberg dual-write enabled: warehouse=$warehouse")
+      IcebergSink.configureCatalog(spark, warehouse)
+      IcebergSink.writeAggregates(
+        agg,
+        IcebergSink.DefaultCatalogName,
+        database = "spark_evolve",
+        table = "agg_orders"
+      )
     }
 
     log.info(s"metrics: ${metrics.snapshot}")

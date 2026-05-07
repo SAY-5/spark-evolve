@@ -15,12 +15,25 @@ the integration test (`src/it/scala`).
 
 ## How to run
 
-    make bench-smoke   # 5k events, ~10s
-    make bench         # 100k events, takes a few minutes on a laptop
+    make bench-smoke    # 10k events, ~5s (CI sanity)
+    make bench-1m       # 1M events, ~10-30s on a laptop (the committed baseline)
+    make bench          # alias for bench-1m
+    make bench-regress  # compare latest run vs sample.json; fail on >=30% drop
 
 Results JSON lands in `bench/results/<timestamp>.json`. The committed
-`bench/results/sample.json` is the run that backs the README numbers and is
-intended to be reproducible by checking out the same commit.
+`bench/results/sample.json` is the 1M-event reference run that backs the README
+numbers. CI runs the 10k smoke on every push and asserts the result file has
+the expected keys; the regress gate is also exercised in CI but at a loose
+DRIFT setting (smoke vs 1M sample is not apples-to-apples — JIT warmup
+dominates at small scales).
+
+## bench-regress gate
+
+`bench/regress.sh` reads the most recent `bench/results/*.json` (excluding
+`sample.json`), pulls `events_per_sec`, and compares against the baseline. If
+the candidate is below `(1 - DRIFT) * baseline_eps` the script exits non-zero.
+Default DRIFT is 0.30 (30%). Override with `DRIFT=0.50` for a looser gate or
+`DRIFT=0.10` for a tighter one.
 
 ## What it doesn't measure
 

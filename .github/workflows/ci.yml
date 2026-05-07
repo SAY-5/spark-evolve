@@ -124,13 +124,20 @@ jobs:
           key: sbt-${{ runner.os }}-${{ hashFiles('**/build.sbt', 'project/**') }}
           restore-keys: |
             sbt-${{ runner.os }}-
-      - name: bench (5k events)
-        run: bash bench/run.sh 5000
+      - name: bench (10k events smoke)
+        run: bash bench/run.sh 10000
       - name: assert results JSON has expected keys
         run: |
           set -e
-          json=$(ls -t bench/results/*.json | head -1)
+          json=$(ls -t bench/results/*.json | grep -v sample.json | head -1)
           echo "checking $json"
           for key in events events_per_sec ms_total parquet_files; do
             grep -q "\"$key\"" "$json" || (echo "missing key $key in $json" && exit 1)
           done
+      - name: bench-regress gate (sanity, smoke vs 1M sample with loose floor)
+        # Smoke runs are 100x smaller and have JIT warmup overhead, so the floor
+        # is only meaningful directionally. Use a generous DRIFT to keep this
+        # green while still failing if the harness is broken (returns 0 eps).
+        env:
+          DRIFT: "0.99"
+        run: bash bench/regress.sh

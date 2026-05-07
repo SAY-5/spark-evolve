@@ -1,15 +1,15 @@
 {
-  "aggregate_rows": 3000,
+  "aggregate_rows": 12000,
   "bad_records": 0,
-  "events": 100000,
-  "events_per_sec": 12172,
-  "mean_parquet_bytes": 25150,
-  "ms_aggregate": 707,
-  "ms_generate": 3576,
-  "ms_total": 8215,
-  "ms_validate": 1822,
-  "ms_write": 2109,
-  "parquet_bytes": 75450,
-  "parquet_files": 3,
-  "valid_records": 100000
+  "events": 1000000,
+  "events_per_sec": 107009,
+  "mean_parquet_bytes": 14725,
+  "ms_aggregate": 1113,
+  "ms_generate": 3981,
+  "ms_total": 9345,
+  "ms_validate": 1754,
+  "ms_write": 2494,
+  "parquet_bytes": 353414,
+  "parquet_files": 24,
+  "valid_records": 1000000
 }

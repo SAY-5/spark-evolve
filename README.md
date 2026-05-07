@@ -82,21 +82,23 @@ Local-machine numbers from a single run on a developer workstation
 (Apple M-series, JDK 17, `local[*]`, in-process — not cluster mode).
 The committed JSON: [`bench/results/sample.json`](bench/results/sample.json).
 
-| metric              | value      |
-|---------------------|------------|
-| events              | 100,000    |
-| events_per_sec      | ~12,200    |
-| ms_total            | 8,215      |
-| ms_validate         | 1,822      |
-| ms_aggregate        | 707        |
-| ms_write            | 2,109      |
-| parquet_files       | 3          |
-| mean_parquet_bytes  | 25,150     |
+| metric              | value         |
+|---------------------|---------------|
+| events              | 1,000,000     |
+| events_per_sec      | ~107,000      |
+| ms_total            | 9,345         |
+| ms_validate         | 1,754         |
+| ms_aggregate        | 1,113         |
+| ms_write            | 2,494         |
+| parquet_files       | 24            |
+| mean_parquet_bytes  | 14,725        |
 
-These numbers are dominated by single-machine fork startup + Spark planner
-overhead, not by throughput. They are intended to demonstrate the pipeline
-is end-to-end correct, not to project cluster-mode performance — see
-`bench/README.md` for the caveats.
+The 1M-event run finishes in under 10 wall-clock seconds on a developer
+laptop. Throughput is bounded by the per-record Avro decode in the validator
+plus Parquet write back-pressure, both of which scale with cluster size in
+production. These numbers demonstrate end-to-end correctness at a meaningful
+volume; cluster numbers are not projected from them — see `bench/README.md`
+for the caveats and `make bench-regress` for the drift-gate the CI uses.
 
 ## Architecture
 

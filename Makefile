@@ -3,7 +3,7 @@
 
 SBT ?= sbt -batch
 
-.PHONY: help compile test it-test lint fmt assembly up down clean bench bench-smoke schema-check-ok schema-check-bad e2e
+.PHONY: help compile test it-test lint fmt assembly up down clean bench bench-smoke bench-1m bench-regress schema-check-ok schema-check-bad e2e
 
 help:
 	@echo "Targets:"
@@ -15,8 +15,10 @@ help:
 	@echo "  assembly        build the fat jar at target/scala-2.13/spark-evolve.jar"
 	@echo "  up              docker-compose up -d (kafka + zookeeper + minio)"
 	@echo "  down            docker-compose down -v"
-	@echo "  bench           run the bench harness (100k events; takes a few minutes)"
-	@echo "  bench-smoke     run a 5k-event smoke pass"
+	@echo "  bench           run the bench harness (1M events; the committed sample baseline)"
+	@echo "  bench-smoke     run a 5k-event smoke pass (CI sanity)"
+	@echo "  bench-1m        explicit alias for the 1M baseline run"
+	@echo "  bench-regress   compare latest run vs sample.json; fail on >=30% drop"
 	@echo "  e2e             produce a tiny batch through Kafka + MinIO and check output"
 	@echo "  schema-check-ok bundled v1 → v2 (compatible) demo"
 	@echo "  schema-check-bad bundled v2 → v3 (incompatible) demo"
@@ -51,10 +53,16 @@ clean:
 	$(SBT) clean
 
 bench:
-	./bench/run.sh 100000
+	./bench/run.sh 1000000
 
 bench-smoke:
 	./bench/run.sh 5000
+
+bench-1m:
+	./bench/run.sh 1000000
+
+bench-regress:
+	./bench/regress.sh
 
 e2e:
 	./bench/run.sh 1000 --skip-bench-output

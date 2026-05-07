@@ -11,8 +11,8 @@ import scala.jdk.CollectionConverters._
 
 /** Property-based tests for the schema compatibility engine.
   *
-  * Each property exercises one engine invariant against a generator that produces structurally diverse
-  * `(old, new)` schema pairs. The generators are intentionally small so failure shrinking yields readable
+  * Each property exercises one engine invariant against a generator that produces structurally diverse `(old,
+  * new)` schema pairs. The generators are intentionally small so failure shrinking yields readable
   * counter-examples.
   */
 class CompatibilityPropertySpec extends AnyFunSuite with Matchers with ScalaCheckPropertyChecks {

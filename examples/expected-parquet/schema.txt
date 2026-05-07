@@ -1,0 +1,10 @@
+message spark_schema {
+  optional binary customer_id (STRING);
+  optional int64 window_start (TIMESTAMP(MILLIS,true));
+  optional int64 window_end (TIMESTAMP(MILLIS,true));
+  optional int64 order_count;
+  optional int64 net_cents_sum;
+  optional double net_cents_avg;
+  optional int64 net_cents_max;
+  optional int64 order_id_distinct;
+}

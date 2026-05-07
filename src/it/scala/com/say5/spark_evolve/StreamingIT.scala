@@ -73,34 +73,24 @@ class StreamingIT extends AnyFunSuite with Matchers with BeforeAndAfterAll with 
       val split = StreamingValidator.validate(raw, v2, Seq.empty)
       val agg   = Aggregator.aggregateStreaming(split.valid, "1 hour")
 
-      // Use a 5s ProcessingTime trigger and a Once-style termination after the data is drained.
+      // Use AvailableNow trigger so the query processes everything in Kafka and stops. This is the
+      // recommended structured-streaming pattern for deterministic tests where producers have
+      // already finished — the query reads the topic snapshot, runs all available microbatches,
+      // and terminates. Watermark-driven aggregations close all windows whose end <= watermark
+      // before the query exits.
       val query = agg.writeStream
         .format("parquet")
         .outputMode("append")
         .partitionBy("date_hour", "customer_segment")
         .option("path", outDir)
         .option("checkpointLocation", ckpt)
-        .trigger(Trigger.ProcessingTime("5 seconds"))
+        .trigger(Trigger.AvailableNow())
         .queryName("streaming-it-query")
         .start()
 
-      // Drive the stream for up to 90 wall-clock seconds. Watermark-based aggregations only emit when
-      // the watermark advances past the window-end; we artificially drive the watermark by waiting
-      // long enough for the per-record timestamp range (5h) to be covered.
-      val deadline = System.currentTimeMillis() + 90.seconds.toMillis
-      while (System.currentTimeMillis() < deadline && query.lastProgress == null) {
-        Thread.sleep(500)
-      }
-      // Wait for at least one batch with rows to land or the deadline.
-      while (
-        System.currentTimeMillis() < deadline &&
-        (Option(query.lastProgress).map(_.numInputRows).getOrElse(0L) < events)
-      ) {
-        Thread.sleep(1000)
-      }
-
-      // Stop once we've consumed >= events (or hit the deadline).
-      query.stop()
+      // AvailableNow stops on its own once Kafka is drained. Bound the wait so a hung test exits.
+      val drained = query.awaitTermination(120.seconds.toMillis)
+      if (!drained) query.stop()
 
       // Read back what landed.
       val landed = sparkSession.read.parquet(outDir)
